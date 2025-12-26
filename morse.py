@@ -119,8 +119,8 @@ class MorseCodeConverter():
         for i, c in enumerate(input):
             if c == "":
                 continue
-            elif c == " ":
-                if input[i+1] == " ":
+            elif c.isspace():
+                if input[i+1].isspace():
                     continue
                 code += "  "
             elif c == "<":
@@ -135,15 +135,6 @@ class MorseCodeConverter():
                 if not prosign_mode:
                     raise ValueError(f"Encountered > while not in prosign mode at index {i}")
                 prosign_mode = False
-            elif c == "\n":
-                if input[i+1] == "\n" or prosign_mode:
-                    continue
-                elif input[i-1] == "\n":
-                    # New section
-                    code += "  " + cls.morse_code_chart["="] + "  "
-                else:
-                    # Newline
-                    code += "  " + cls.morse_code_chart["/"] + "  "
             else:
                 try:
                     code += cls.morse_code_chart[c.lower()]
