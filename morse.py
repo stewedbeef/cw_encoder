@@ -134,8 +134,7 @@ class MorseCodeConverter():
                     code += cls.morse_code_chart[c.lower()] + " "
                 except KeyError as e:
                     raise ValueError(f"Invalid character in input string, got '{c}' with value {ord(c)} at index {i}") from e
-        # Append AR to signal end
-        code = code.rstrip() + "  " + cls.morse_code_chart["+"]
+        code = code.rstrip()
         return code
     
     def modulate_with_linear_rises(
