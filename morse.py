@@ -103,7 +103,9 @@ class MorseCodeConverter():
     @classmethod
     def str_to_code(cls, input: str) -> str:
         """
-        Converts a string into Morse code representation with ".", "-" and " "
+        Converts a string into Morse code representation with ".", "-" and " ". Enter prosigns with their letter abbreviations enclosed in angle brackets.
+
+        Unimplemented: If <<> is encountered, put in a left angle bracket. If <> is encountered, put in a right angle bracket.
 
         :param input: Input string
         :type input: str
@@ -113,6 +115,7 @@ class MorseCodeConverter():
         """
         input = input.strip()
         code: str = ""
+        prosign_mode: bool = False
         for i, c in enumerate(input):
             if c == "":
                 continue
@@ -120,8 +123,20 @@ class MorseCodeConverter():
                 if input[i+1] == " ":
                     continue
                 code += "  "
+            elif c == "<":
+                prosign_mode = True
+                # if prosign_mode:
+                #     code += cls.morse_code_chart["<"]
+                # elif input[i+1] == ">":
+                #     code += cls.morse_code_chart[">"]
+                # else:
+                #     prosign_mode = True
+            elif c == ">":
+                if not prosign_mode:
+                    raise ValueError(f"Encountered > while not in prosign mode at index {i}")
+                prosign_mode = False
             elif c == "\n":
-                if input[i+1] == "\n":
+                if input[i+1] == "\n" or prosign_mode:
                     continue
                 elif input[i-1] == "\n":
                     # New section
@@ -131,7 +146,9 @@ class MorseCodeConverter():
                     code += "  " + cls.morse_code_chart["/"] + "  "
             else:
                 try:
-                    code += cls.morse_code_chart[c.lower()] + " "
+                    code += cls.morse_code_chart[c.lower()]
+                    if not prosign_mode:
+                        code += " "
                 except KeyError as e:
                     raise ValueError(f"Invalid character in input string, got '{c}' with value {ord(c)} at index {i}") from e
         code = code.rstrip()
