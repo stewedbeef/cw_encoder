@@ -3,6 +3,7 @@ import numpy.typing as npt
 from scipy import signal
 from scipy.io import wavfile
 import sys
+from typing import Optional
 import yaml
 
 class MorseCodeConverter():
@@ -10,7 +11,7 @@ class MorseCodeConverter():
     with open("morse.yaml") as f:
         morse_code_chart = yaml.safe_load(f)
 
-    def __init__(self, wpm: float=20, fc: float=550, fs: float=44100):
+    def __init__(self, wpm: float = 20, fc: float = 550, fs: float = 44100):
         """
         Initialises an instance of the MorseCodeConverter class
 
@@ -19,31 +20,42 @@ class MorseCodeConverter():
 
         :param fc: Carrier frequency of the output wave in Hertz
         :type fc: float
+
+        :param fs: Sampling frequency of the output in Hertz
+        :type fs: float
         """
         self.set_params(wpm, fc, fs)
     
-    def set_params(self, wpm: float, fc: float, fs: float) -> None:
+    def set_params(
+            self,
+            wpm: Optional[float] = None,
+            fc: Optional[float] = None,
+            fs: Optional[float] = None,
+    ) -> None:
         """
         Set the wpm and fc params and recalculate other constants
 
         :param wpm: Words per minute of the Morse code transmission, as measured with the word PARIS in accordance with convention
-        :type wpm: float
+        :type wpm: Optional[float]
 
         :param fc: Carrier frequency of the output wave in Hertz
-        :type fc: float
+        :type fc: Optional[float]
 
-        :param fs: Sampling frequency of output
-        :type fs: float
+        :param fs: Sampling frequency of the output in Hertz
+        :type fs: Optional[float]
         """
-        self.wpm = wpm
-        self.fc = fc
-        self.fs = fs
+        self.wpm = wpm or self.wpm
+        self.fc = fc or self.fc
+        self.fs = fs or self.fs
 
         self.dit = 1.2 / wpm
         self.dah = 3 * self.dit
         self.dit_gap = self.dit # Gap between dits/dahs
         self.letter_gap = self.dah # Gap between letters
         self.word_gap = 2 * self.dah + self.dit # Gap between words
+        # When upscaling from the keying waveform in dits to the sampling
+        # frequency fs
+        self.upscale_factor = round(self.fs * self.dit)
 
         return self
 
@@ -124,6 +136,8 @@ class MorseCodeConverter():
                     continue
                 code += "  "
             elif c == "<":
+                if prosign_mode:
+                    raise ValueError(f"Encountered < while in prosign mode at index {i}")
                 prosign_mode = True
                 # if prosign_mode:
                 #     code += cls.morse_code_chart["<"]
@@ -148,8 +162,15 @@ class MorseCodeConverter():
     def modulate_with_linear_rises(
             self,
             key: list[bool],
-    ) -> npt.NDArray[np.float32]:
-        upscale_factor = round(self.fs * self.dit)
+    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+        """
+        Modules the keyer instructions into an envelope and sound wave output
+
+        :param key: Description
+        :type key: list[bool]
+        :return: Description
+        :rtype: tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]
+        """
         # Rise and fall times, in units of number of samples
         t_ramp = round(min(0.01, 0.1*self.dit) * self.fs)
 
@@ -159,23 +180,29 @@ class MorseCodeConverter():
         # Linear ramp
         # ramp_up = len(t_ramp) / upscale_factor * np.arange(t_ramp)
 
-        envelope = np.repeat(np.array(key, dtype=np.float32), upscale_factor)
+        envelope = np.repeat(
+            np.array(key, dtype=np.float32),
+            self.upscale_factor,
+        )
 
         # Don't do the start and end since there won't be a boundary
         for i in range(1, len(key)-1):
-            start = i * upscale_factor
-            end = (i + 1) * upscale_factor
+            start = i * self.upscale_factor
+            end = (i + 1) * self.upscale_factor
             if key[i]:
                 if not key[i-1]:
-                    envelope[start : start + t_ramp] = ramp_up
+                    envelope[start : start+t_ramp] = ramp_up
                 if not key[i+1]:
-                    envelope[end - t_ramp : end] = ramp_down
-        oscillator = np.sin(2 * np.pi * self.fc / self.fs * np.arange(len(envelope))).astype(np.float32)
+                    envelope[end-t_ramp : end] = ramp_down
+        oscillator = np.sin(
+            2 * np.pi * self.fc / self.fs * np.arange(len(envelope)),
+            dtype=np.float32,
+        )
         output = envelope * oscillator
 
         # Normalise the output
         output = output / np.max(np.abs(output))
-        return output
+        return envelope, output
 
 
     def modulate_with_filter(self, key: list[bool]) -> npt.NDArray[np.float32]:
@@ -187,7 +214,7 @@ class MorseCodeConverter():
         :return: Modulated signal (class A1W transmission)
         :rtype: numpy.typing.NDArray[numpy.float32]
         """
-        key = np.array(key).astype(np.float32)
+        key = np.array(key, dtype=np.float32)
 
         # Pass through a low pass filter
         # Cutoff freq for filter is 2x to 3x the max freq of morse code, which
@@ -196,16 +223,20 @@ class MorseCodeConverter():
         numtaps = 1001 # Should be 1001 to 4001
 
         # Instantiate a finite impulse response filter
-        key = np.repeat(key, round(self.fs * self.dit))
-        kernel: npt.NDArray[np.float32] = signal.firwin(numtaps, cutoff, window="blackman", fs=self.fs)
-        intermediate = signal.lfilter(kernel, 1.0, key).astype(np.float32)
+        key = np.repeat(key, self.upscale_factor)
+        kernel: npt.NDArray[np.float32] = signal.firwin(
+            numtaps, cutoff, window="blackman", fs=self.fs)
+        envelope = signal.lfilter(kernel, 1.0, key).astype(np.float32)
 
-        oscillator = np.sin(2 * np.pi * self.fc / self.fs * np.arange(len(intermediate))).astype(np.float32)
-        output = intermediate * oscillator
+        oscillator = np.sin(
+            2 * np.pi * self.fc / self.fs * np.arange(len(envelope)),
+            dtype=np.float32,
+        )
+        output = envelope * oscillator
 
         # Normalise the output
         output = output / np.max(np.abs(output))
-        return output
+        return envelope, output
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -214,4 +245,5 @@ if __name__ == "__main__":
     with open(sys.argv[1]) as f:
         input = f.read()
     converter = MorseCodeConverter(wpm=25)
-    wavfile.write(sys.argv[2], 44100, (converter.run(input) * 32767).astype(np.int16))
+    envelope, sound = converter.run(input)
+    wavfile.write(sys.argv[2], 44100, np.round(sound * 32767, dtype=np.int16))
