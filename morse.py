@@ -11,7 +11,7 @@ class MorseCodeConverter():
     with open("morse.yaml") as f:
         morse_code_chart = yaml.safe_load(f)
 
-    def __init__(self, wpm: float = 20, fc: float = 550, fs: float = 44100):
+    def __init__(self, wpm: float = 20, fs: float = 44100):
         """
         Initialises an instance of the MorseCodeConverter class
 
@@ -24,12 +24,11 @@ class MorseCodeConverter():
         :param fs: Sampling frequency of the output in Hertz
         :type fs: float
         """
-        self.set_params(wpm, fc, fs)
+        self.set_params(wpm, fs)
     
     def set_params(
             self,
             wpm: Optional[float] = None,
-            fc: Optional[float] = None,
             fs: Optional[float] = None,
     ) -> None:
         """
@@ -38,14 +37,10 @@ class MorseCodeConverter():
         :param wpm: Words per minute of the Morse code transmission, as measured with the word PARIS in accordance with convention
         :type wpm: Optional[float]
 
-        :param fc: Carrier frequency of the output wave in Hertz
-        :type fc: Optional[float]
-
         :param fs: Sampling frequency of the output in Hertz
         :type fs: Optional[float]
         """
         self.wpm = wpm or self.wpm
-        self.fc = fc or self.fc
         self.fs = fs or self.fs
 
         self.dit = 1.2 / wpm
@@ -60,21 +55,69 @@ class MorseCodeConverter():
         return self
 
 
-    def run(self, input: str) -> npt.NDArray[np.float32]:
+    def run(self, input: str, fc: float = 550) -> npt.NDArray[np.float32]:
         """
         Run the Morse code converter
 
         :param input: Input string
         :type input: str
 
+        :param fc: Carrier frequency
+        :type fc: float
+
         :return: The modulated signal (A1W type transmission)
         :rtype: numpy.typing.NDArray[numpy.float32]
         """
+        envelope = self.get_envelope(input)
+        sig = self.modulate(envelope, fc=fc)
+        return sig
+    
+    def get_envelope(self, input: str) -> npt.NDArray[np.float32]:
+        """
+        Gets the envelope at the sampling frequency
+
+        :param input: Input string
+        :type input: str
+
+        :return: Keying envelope to be modulated
+        :rtype: Any
+        """
         code = self.str_to_code(input)
         key = self.get_key_instructions(code)
-        # sig = self.modulate_with_filter(key)
-        sig = self.modulate_with_linear_rises(key)
-        return sig
+        return self.keyer_to_envelope_with_ramp(key)
+    
+    @staticmethod
+    def downsample_envelope(
+        envelope: npt.NDArray[np.float32],
+        fs_out: int,
+        fs_in: int,
+    ):
+        """
+        Generates the pixel values across time according to the envelope given. The envelope is expected to be normalised. This is primarily meant for creating a video from the audio envelope (keyer waveform) generated with other functions.
+        
+        :param envelope: The envelope waveform
+        :type envelope: npt.NDArray[np.float32]
+
+        :param fs_out: The output frequency, in the same units as fs_in. This is normally the video frequency.
+        :type fs_out: int
+
+        :param fs_in: The input frequency, in the same units as fs_out. This is normally the audio frequency.
+        :type fs_in: int
+        """
+        # This is more of a helper, hence why it's a static method
+        if fs_in % fs_out == 0:
+            skip_time = fs_in // fs_out
+            return envelope[::skip_time]
+        else:
+            # Audio should be whole number of video for best results, but for now
+            # don't warn
+            # Rounding each index avoids significant drifting
+            skip_times = np.unique(
+                np.round(
+                    np.arange(0, len(envelope), fs_in / fs_out),
+                ).astype(int),
+            )
+            return envelope[skip_times]
 
     @classmethod
     def get_key_instructions(cls, code: str) -> list[bool]:
@@ -117,8 +160,6 @@ class MorseCodeConverter():
         """
         Converts a string into Morse code representation with ".", "-" and " ". Enter prosigns with their letter abbreviations enclosed in angle brackets.
 
-        Unimplemented: If <<> is encountered, put in a left angle bracket. If <> is encountered, put in a right angle bracket.
-
         :param input: Input string
         :type input: str
 
@@ -139,6 +180,9 @@ class MorseCodeConverter():
                 if prosign_mode:
                     raise ValueError(f"Encountered < while in prosign mode at index {i}")
                 prosign_mode = True
+                # Unimplemented: If <<> is encountered, put in a left angle
+                # bracket. If <> is encountered, put in a right angle bracket.
+
                 # if prosign_mode:
                 #     code += cls.morse_code_chart["<"]
                 # elif input[i+1] == ">":
@@ -159,17 +203,18 @@ class MorseCodeConverter():
         code = code.rstrip()
         return code
     
-    def modulate_with_linear_rises(
+    def keyer_to_envelope_with_ramp(
             self,
-            key: list[bool],
-    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+            key: list[bool]
+    ) -> npt.NDArray[np.float32]:
         """
-        Modules the keyer instructions into an envelope and sound wave output
+        Turns the keyer into an envelope with ramps
 
-        :param key: Description
+        :param key: Keying waveform normalised to dit length
         :type key: list[bool]
-        :return: Description
-        :rtype: tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]
+
+        :return: Keying waveform in time domain
+        :rtype: npt.NDArray[np.float32]
         """
         # Rise and fall times, in units of number of samples
         t_ramp = round(min(0.01, 0.1*self.dit) * self.fs)
@@ -194,24 +239,46 @@ class MorseCodeConverter():
                     envelope[start : start+t_ramp] = ramp_up
                 if not key[i+1]:
                     envelope[end-t_ramp : end] = ramp_down
+        return envelope
+    
+    def modulate(
+            self,
+            envelope: npt.NDArray[np.float32],
+            fc: float = 550,
+    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+        """
+        Modules the keyer instructions into an envelope and sound wave output
+
+        :param envelope: The envelope to be modulated into a type A1W transmission
+        :type envelope: npt.NDArray[np.float32]
+
+        :param fc: Carrier frequency of the output wave in Hertz
+        :type fc: float
+
+        :return: The modulated waveform (class A1W transmission)
+        :rtype: npt.NDArray[np.float32]
+        """
         oscillator = np.sin(
-            2 * np.pi * self.fc / self.fs * np.arange(len(envelope)),
+            2 * np.pi * fc / self.fs * np.arange(len(envelope)),
             dtype=np.float32,
         )
         output = envelope * oscillator
 
-        # Normalise the output
-        output = output / np.max(np.abs(output))
-        return envelope, output
+        # Output should already be normalised
+        return output
 
 
-    def modulate_with_filter(self, key: list[bool]) -> npt.NDArray[np.float32]:
+    def keyer_to_envelope_filtered(
+            self,
+            key: list[bool],
+    ) -> npt.NDArray[np.float32]:
         """
-        Modulates the keyer output into a sound wave
+        Turns the keyer into an envelope
 
-        :param key: Keyer input
+        :param key: Keyer input normalised to dit lengths
         :type key: list[bool]
-        :return: Modulated signal (class A1W transmission)
+
+        :return: Keying waveform in time domain
         :rtype: numpy.typing.NDArray[numpy.float32]
         """
         key = np.array(key, dtype=np.float32)
@@ -226,24 +293,17 @@ class MorseCodeConverter():
         key = np.repeat(key, self.upscale_factor)
         kernel: npt.NDArray[np.float32] = signal.firwin(
             numtaps, cutoff, window="blackman", fs=self.fs)
-        envelope = signal.lfilter(kernel, 1.0, key).astype(np.float32)
-
-        oscillator = np.sin(
-            2 * np.pi * self.fc / self.fs * np.arange(len(envelope)),
-            dtype=np.float32,
-        )
-        output = envelope * oscillator
-
-        # Normalise the output
-        output = output / np.max(np.abs(output))
-        return envelope, output
+        return signal.lfilter(kernel, 1.0, key).astype(np.float32)
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Expected input and output files", file=sys.stderr)
-        sys.exit()
+        sys.exit(1)
     with open(sys.argv[1]) as f:
         input = f.read()
     converter = MorseCodeConverter(wpm=25)
-    envelope, sound = converter.run(input)
-    wavfile.write(sys.argv[2], 44100, np.round(sound * 32767, dtype=np.int16))
+    wavfile.write(
+        sys.argv[2],
+        44100,
+        np.round(converter.run(input, fc=550) * 32767).astype(dtype=np.int16)
+    )
