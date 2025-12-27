@@ -1,6 +1,5 @@
 import numpy as np
 import numpy.typing as npt
-from scipy import signal
 from scipy.io import wavfile
 import sys
 from typing import Optional
@@ -266,34 +265,6 @@ class MorseCodeConverter():
 
         # Output should already be normalised
         return output
-
-
-    def keyer_to_envelope_filtered(
-            self,
-            key: list[bool],
-    ) -> npt.NDArray[np.float32]:
-        """
-        Turns the keyer into an envelope
-
-        :param key: Keyer input normalised to dit lengths
-        :type key: list[bool]
-
-        :return: Keying waveform in time domain
-        :rtype: numpy.typing.NDArray[numpy.float32]
-        """
-        key = np.array(key, dtype=np.float32)
-
-        # Pass through a low pass filter
-        # Cutoff freq for filter is 2x to 3x the max freq of morse code, which
-        # is 1/dit
-        cutoff = 3 / self.dit
-        numtaps = 1001 # Should be 1001 to 4001
-
-        # Instantiate a finite impulse response filter
-        key = np.repeat(key, self.upscale_factor)
-        kernel: npt.NDArray[np.float32] = signal.firwin(
-            numtaps, cutoff, window="blackman", fs=self.fs)
-        return signal.lfilter(kernel, 1.0, key).astype(np.float32)
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
